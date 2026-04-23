@@ -1,31 +1,26 @@
 from flask import Flask, jsonify, request
 
-from anipy_api.provider import (
-    get_provider,
-    LanguageTypeEnum
-)
-
+from anipy_api.provider import get_provider, LanguageTypeEnum
 from anipy_api.anime import Anime
 
 app = Flask(__name__)
 
 # =========================================
-# USE ANIMEKAI INSTEAD OF ALLANIME
+# PROVIDER (Gogoanime custom base URL)
 # =========================================
 
-provider = get_provider("gogoanimes", base_url_override="https://gogoanimes.cv")
+provider = get_provider(
+    "gogoanime",
+    base_url_override="https://gogoanimes.cv/"
+)
+
 
 # =========================================
 # HELPERS
 # =========================================
 
 def get_lang():
-
-    lang = request.args.get(
-        "lang",
-        "sub"
-    ).lower()
-
+    lang = request.args.get("lang", "sub").lower()
     return (
         LanguageTypeEnum.DUB
         if lang == "dub"
@@ -33,14 +28,12 @@ def get_lang():
     )
 
 
-def search_anime(query):
-
-    results = provider.get_search(query)
-
-    if not results:
-        return None
-
-    return results[0]
+def safe_search(query):
+    try:
+        results = provider.get_search(query)
+        return results if results else []
+    except Exception:
+        return []
 
 
 # =========================================
@@ -49,29 +42,16 @@ def search_anime(query):
 
 @app.route("/")
 def home():
-
     return jsonify({
-
         "success": True,
-
-        "provider": "animekai",
-
+        "provider": "gogoanime",
+        "base_url": "https://gogoanimes.cv/",
         "routes": {
-
-            "/search?q=naruto":
-                "search anime",
-
-            "/anime?q=naruto":
-                "anime info",
-
-            "/episodes?q=naruto":
-                "episodes",
-
-            "/watch?q=naruto&episode=1":
-                "video streams"
-
+            "/search?q=naruto": "Search anime",
+            "/anime?q=naruto": "Anime info",
+            "/episodes?q=naruto": "Episode list",
+            "/watch?q=naruto&episode=1": "Stream video"
         }
-
     })
 
 
@@ -81,58 +61,38 @@ def home():
 
 @app.route("/search")
 def search():
-
     query = request.args.get("q")
 
     if not query:
-
         return jsonify({
-
             "success": False,
-
             "error": "Missing ?q="
-
         }), 400
 
     try:
-
-        results = provider.get_search(query)
+        results = safe_search(query)
 
         data = []
 
         for r in results:
-
             data.append({
-
-                "title": r.name,
-
-                "id": r.identifier,
-
+                "title": getattr(r, "name", None),
+                "id": getattr(r, "identifier", None),
                 "languages": [
-                    str(x)
-                    for x in r.languages
+                    str(x) for x in getattr(r, "languages", [])
                 ]
-
             })
 
         return jsonify({
-
             "success": True,
-
             "count": len(data),
-
             "results": data
-
         })
 
     except Exception as e:
-
         return jsonify({
-
             "success": False,
-
             "error": str(e)
-
         }), 500
 
 
@@ -142,66 +102,42 @@ def search():
 
 @app.route("/anime")
 def anime_info():
-
     query = request.args.get("q")
 
     if not query:
-
         return jsonify({
-
             "success": False,
-
             "error": "Missing ?q="
-
         }), 400
 
     try:
+        results = safe_search(query)
 
-        result = search_anime(query)
-
-        if not result:
-
+        if not results:
             return jsonify({
-
                 "success": False,
-
                 "error": "Anime not found"
-
             }), 404
 
-        anime = Anime.from_search_result(
-            provider,
-            result
-        )
+        anime_result = results[0]
 
+        anime = Anime.from_search_result(provider, anime_result)
         info = anime.get_info()
 
         return jsonify({
-
             "success": True,
-
             "anime": {
-
                 "title": info.name,
-
                 "image": info.image,
-
                 "genres": info.genres,
-
                 "synopsis": info.synopsis
-
             }
-
         })
 
     except Exception as e:
-
         return jsonify({
-
             "success": False,
-
             "error": str(e)
-
         }), 500
 
 
@@ -211,172 +147,111 @@ def anime_info():
 
 @app.route("/episodes")
 def episodes():
-
     query = request.args.get("q")
 
     if not query:
-
         return jsonify({
-
             "success": False,
-
             "error": "Missing ?q="
-
         }), 400
 
     try:
+        results = safe_search(query)
 
-        result = search_anime(query)
-
-        if not result:
-
+        if not results:
             return jsonify({
-
                 "success": False,
-
                 "error": "Anime not found"
-
             }), 404
 
-        anime = Anime.from_search_result(
-            provider,
-            result
-        )
+        anime = Anime.from_search_result(provider, results[0])
 
-        eps = anime.get_episodes(
-            lang=get_lang()
-        )
+        eps = anime.get_episodes(lang=get_lang())
 
         return jsonify({
-
             "success": True,
-
-            "anime": result.name,
-
+            "anime": results[0].name,
             "episodes": list(eps)
-
         })
 
     except Exception as e:
-
         return jsonify({
-
             "success": False,
-
             "error": str(e)
-
         }), 500
 
 
 # =========================================
-# WATCH
+# WATCH (STREAM FIXED + SAFE)
 # =========================================
 
 @app.route("/watch")
 def watch():
-
     query = request.args.get("q")
     episode = request.args.get("episode")
 
-    if not query:
-
+    if not query or not episode:
         return jsonify({
-
             "success": False,
-
-            "error": "Missing ?q="
-
-        }), 400
-
-    if not episode:
-
-        return jsonify({
-
-            "success": False,
-
-            "error": "Missing ?episode="
-
+            "error": "Missing ?q or ?episode"
         }), 400
 
     try:
+        results = safe_search(query)
 
-        result = search_anime(query)
-
-        if not result:
-
+        if not results:
             return jsonify({
-
                 "success": False,
-
                 "error": "Anime not found"
-
             }), 404
 
-        anime = Anime.from_search_result(
-            provider,
-            result
-        )
+        anime = Anime.from_search_result(provider, results[0])
 
-        # get all streams
         streams = anime.get_videos(
             episode=float(episode),
             lang=get_lang()
         )
 
         if not streams:
-
             return jsonify({
-
                 "success": False,
-
                 "error": "No streams found"
-
             }), 404
 
-        parsed = []
+        output = []
 
         for s in streams:
-
             try:
+                url = getattr(s, "url", None)
+                if not url:
+                    continue
 
-                parsed.append({
-
-                    "url":
-                        getattr(s, "url", None),
-
-                    "resolution":
-                        getattr(
-                            s,
-                            "resolution",
-                            "unknown"
-                        )
-
+                output.append({
+                    "url": url,
+                    "quality": getattr(s, "resolution", "unknown"),
+                    "episode": episode
                 })
-
-            except Exception:
+            except:
                 continue
 
         return jsonify({
-
             "success": True,
-
-            "anime": result.name,
-
+            "anime": results[0].name,
             "episode": episode,
-
-            "streams": parsed
-
+            "streams": output
         })
 
     except Exception as e:
-
         return jsonify({
-
             "success": False,
-
-            "error_type":
-                type(e).__name__,
-
+            "error_type": type(e).__name__,
             "error": str(e)
-
         }), 500
+
+
+# =========================================
+# RUN (ONLY FOR LOCAL TESTING)
+# =========================================
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
