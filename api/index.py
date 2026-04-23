@@ -267,32 +267,35 @@ def watch():
     try:
         query = request.args.get("q")
         episode = request.args.get("episode")
-
-        provider_name = request.args.get(
-            "provider",
-            DEFAULT_PROVIDER
-        )
-
+        provider_name = request.args.get("provider", DEFAULT_PROVIDER)
         lang = request.args.get("lang", "sub").lower()
 
-        quality = request.args.get("quality", "best")
-
-        if not query or not episode:
+        if not query:
             return jsonify({
                 "success": False,
-                "error": "Missing ?q= or ?episode="
+                "error": "Missing ?q="
             }), 400
 
-        provider, result, anime = get_anime_from_query(
-            query,
-            provider_name
-        )
+        if not episode:
+            return jsonify({
+                "success": False,
+                "error": "Missing ?episode="
+            }), 400
 
-        if not anime:
+        provider = get_anime_provider(provider_name)
+
+        # search anime
+        results = provider.get_search(query)
+
+        if not results:
             return jsonify({
                 "success": False,
                 "error": "Anime not found"
             }), 404
+
+        result = results[0]
+
+        anime = Anime.from_search_result(provider, result)
 
         language = (
             LanguageTypeEnum.DUB
@@ -300,20 +303,45 @@ def watch():
             else LanguageTypeEnum.SUB
         )
 
-        # get all streams first
-        streams = anime.get_videos(
-            episode=float(episode),
-            lang=language
-        )
+        # fetch streams
+        try:
+            streams = anime.get_videos(
+                episode=float(episode),
+                lang=language
+            )
+
+        except Exception as stream_error:
+            return jsonify({
+                "success": False,
+                "stage": "get_videos",
+                "provider": provider_name,
+                "anime": result.name,
+                "episode": episode,
+                "details": str(stream_error)
+            }), 500
 
         if not streams:
             return jsonify({
                 "success": False,
-                "error": "No streams found"
+                "error": "No streams available"
             }), 404
 
-        # choose best stream
-        stream = streams[0]
+        valid_streams = []
+
+        for s in streams:
+            try:
+                valid_streams.append({
+                    "url": getattr(s, "url", None),
+                    "quality": getattr(s, "resolution", "unknown")
+                })
+            except:
+                pass
+
+        if not valid_streams:
+            return jsonify({
+                "success": False,
+                "error": "Streams were invalid"
+            }), 500
 
         return jsonify({
             "success": True,
@@ -321,20 +349,14 @@ def watch():
             "anime": result.name,
             "episode": episode,
             "language": lang,
-            "video": stream.url,
-            "quality": stream.resolution,
-            "available_streams": [
-                {
-                    "quality": s.resolution,
-                    "url": s.url
-                }
-                for s in streams
-            ]
+            "streams": valid_streams
         })
 
     except Exception as e:
         return jsonify({
             "success": False,
+            "stage": "outer",
+            "error_type": type(e).__name__,
             "error": str(e)
         }), 500
 
