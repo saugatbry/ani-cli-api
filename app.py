@@ -1,12 +1,12 @@
 from flask import Flask, jsonify, request
-from anipy_api.provider import get_provider
+from anipy_api.provider import get_provider, LanguageTypeEnum
 from anipy_api.anime import Anime
-from anipy_api.provider import LanguageTypeEnum
 
 app = Flask(__name__)
 
-# Use allanime provider (allmanga.to)
-provider = get_provider("allanime")
+
+def get_anime_provider():
+    return get_provider("allanime")
 
 
 @app.route("/")
@@ -14,7 +14,7 @@ def home():
     return jsonify({
         "success": True,
         "api": "AllAnime API",
-        "provider": "allmanga.to"
+        "provider": "allanime"
     })
 
 
@@ -24,18 +24,23 @@ def search():
     query = request.args.get("q")
 
     if not query:
-        return jsonify({"error": "Missing query"}), 400
+        return jsonify({
+            "success": False,
+            "error": "Missing query parameter ?q="
+        }), 400
 
     try:
+        provider = get_anime_provider()
+
         results = provider.get_search(query)
 
         data = []
 
         for r in results:
             data.append({
-                "name": r.name,
+                "title": r.name,
                 "id": r.identifier,
-                "languages": [str(x) for x in r.languages]
+                "languages": [str(lang) for lang in r.languages]
             })
 
         return jsonify({
@@ -45,24 +50,35 @@ def search():
         })
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 
 # GET ANIME INFO
-@app.route("/anime/<anime_id>")
-def anime_info(anime_id):
+@app.route("/anime")
+def anime_info():
+    query = request.args.get("q")
+
+    if not query:
+        return jsonify({
+            "success": False,
+            "error": "Missing query parameter ?q="
+        }), 400
+
     try:
-        results = provider.get_search("")
+        provider = get_anime_provider()
 
-        target = None
+        results = provider.get_search(query)
 
-        for r in results:
-            if r.identifier == anime_id:
-                target = r
-                break
+        if not results:
+            return jsonify({
+                "success": False,
+                "error": "Anime not found"
+            }), 404
 
-        if not target:
-            return jsonify({"error": "Anime not found"}), 404
+        target = results[0]
 
         anime = Anime.from_search_result(provider, target)
 
@@ -77,24 +93,35 @@ def anime_info(anime_id):
         })
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 
 # GET EPISODES
-@app.route("/episodes/<anime_id>")
-def episodes(anime_id):
+@app.route("/episodes")
+def episodes():
+    query = request.args.get("q")
+
+    if not query:
+        return jsonify({
+            "success": False,
+            "error": "Missing query parameter ?q="
+        }), 400
+
     try:
-        results = provider.get_search("")
+        provider = get_anime_provider()
 
-        target = None
+        results = provider.get_search(query)
 
-        for r in results:
-            if r.identifier == anime_id:
-                target = r
-                break
+        if not results:
+            return jsonify({
+                "success": False,
+                "error": "Anime not found"
+            }), 404
 
-        if not target:
-            return jsonify({"error": "Anime not found"}), 404
+        target = results[0]
 
         anime = Anime.from_search_result(provider, target)
 
@@ -102,28 +129,40 @@ def episodes(anime_id):
 
         return jsonify({
             "success": True,
-            "episodes": eps
+            "episodes": list(eps)
         })
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 
-# GET VIDEO STREAM
-@app.route("/watch/<anime_id>/<episode>")
-def watch(anime_id, episode):
+# WATCH EPISODE
+@app.route("/watch")
+def watch():
+    query = request.args.get("q")
+    episode = request.args.get("episode")
+
+    if not query or not episode:
+        return jsonify({
+            "success": False,
+            "error": "Missing ?q= or ?episode="
+        }), 400
+
     try:
-        results = provider.get_search("")
+        provider = get_anime_provider()
 
-        target = None
+        results = provider.get_search(query)
 
-        for r in results:
-            if r.identifier == anime_id:
-                target = r
-                break
+        if not results:
+            return jsonify({
+                "success": False,
+                "error": "Anime not found"
+            }), 404
 
-        if not target:
-            return jsonify({"error": "Anime not found"}), 404
+        target = results[0]
 
         anime = Anime.from_search_result(provider, target)
 
@@ -141,8 +180,11 @@ def watch(anime_id, episode):
         })
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+# IMPORTANT:
+# DO NOT use app.run() on Vercel
