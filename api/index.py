@@ -13,7 +13,7 @@ app = Flask(__name__)
 # USE ANIMEKAI INSTEAD OF ALLANIME
 # =========================================
 
-provider = get_provider("animekai", base_url_override="https://animekai.to") 
+provider = get_provider("allanime", base_url_override="https://allmanga.to") 
 
 
 # =========================================
