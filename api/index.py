@@ -13,8 +13,7 @@ app = Flask(__name__)
 # USE ANIMEKAI INSTEAD OF ALLANIME
 # =========================================
 
-provider = get_provider("allanime")
-
+provider = get_provider("gogoanimes", base_url_override="https://gogoanimes.cv")
 
 # =========================================
 # HELPERS
