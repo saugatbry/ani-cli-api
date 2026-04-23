@@ -275,7 +275,7 @@ def watch():
 
         lang = request.args.get("lang", "sub").lower()
 
-        quality = request.args.get("quality", "1080")
+        quality = request.args.get("quality", "best")
 
         if not query or not episode:
             return jsonify({
@@ -300,11 +300,20 @@ def watch():
             else LanguageTypeEnum.SUB
         )
 
-        stream = anime.get_video(
+        # get all streams first
+        streams = anime.get_videos(
             episode=float(episode),
-            lang=language,
-            preferred_quality=quality
+            lang=language
         )
+
+        if not streams:
+            return jsonify({
+                "success": False,
+                "error": "No streams found"
+            }), 404
+
+        # choose best stream
+        stream = streams[0]
 
         return jsonify({
             "success": True,
@@ -313,7 +322,14 @@ def watch():
             "episode": episode,
             "language": lang,
             "video": stream.url,
-            "quality": stream.resolution
+            "quality": stream.resolution,
+            "available_streams": [
+                {
+                    "quality": s.resolution,
+                    "url": s.url
+                }
+                for s in streams
+            ]
         })
 
     except Exception as e:
@@ -321,7 +337,6 @@ def watch():
             "success": False,
             "error": str(e)
         }), 500
-
 
 # IMPORTANT:
 # Do NOT use app.run() on Vercel
