@@ -14,8 +14,7 @@ app = Flask(__name__)
 # =========================================
 
 # allanime = allmanga.to
-provider = get_provider("allanime")
-
+provider = get_provider("animekai", base_url_override="https://animekai.to") 
 
 # =========================================
 # HELPERS
@@ -288,49 +287,44 @@ def episodes():
 def watch():
 
     query = request.args.get("q")
-
     episode = request.args.get("episode")
+    lang = request.args.get("lang", "sub")
 
     if not query:
-
         return jsonify({
-
             "success": False,
-
             "error": "Missing ?q="
-
         }), 400
 
     if not episode:
-
         return jsonify({
-
             "success": False,
-
             "error": "Missing ?episode="
-
         }), 400
 
     try:
 
-        result = find_anime(query)
+        # SEARCH
+        results = provider.get_search(query)
 
-        if not result:
-
+        if not results:
             return jsonify({
-
                 "success": False,
-
                 "error": "Anime not found"
-
             }), 404
+
+        result = results[0]
 
         anime = Anime.from_search_result(
             provider,
             result
         )
 
-        language = get_language()
+        language = (
+            LanguageTypeEnum.DUB
+            if lang == "dub"
+            else LanguageTypeEnum.SUB
+        )
 
         # safer than get_video()
         streams = anime.get_videos(
@@ -339,44 +333,51 @@ def watch():
         )
 
         if not streams:
-
             return jsonify({
-
                 "success": False,
-
                 "error": "No streams found"
-
             }), 404
 
-        parsed_streams = []
+        parsed = []
 
-        for s in streams:
+        for stream in streams:
 
             try:
 
-                parsed_streams.append({
+                if not stream:
+                    continue
 
-                    "url":
-                        getattr(s, "url", None),
+                url = getattr(stream, "url", None)
 
-                    "quality":
-                        getattr(
-                            s,
-                            "resolution",
-                            "unknown"
-                        ),
+                if not url:
+                    continue
 
-                    "episode":
-                        getattr(
-                            s,
-                            "episode",
-                            episode
-                        )
+                parsed.append({
+
+                    "url": url,
+
+                    "resolution": getattr(
+                        stream,
+                        "resolution",
+                        "unknown"
+                    ),
+
+                    "episode": getattr(
+                        stream,
+                        "episode",
+                        episode
+                    )
 
                 })
 
             except Exception:
-                pass
+                continue
+
+        if not parsed:
+            return jsonify({
+                "success": False,
+                "error": "Provider returned broken streams"
+            }), 500
 
         return jsonify({
 
@@ -386,7 +387,9 @@ def watch():
 
             "episode": episode,
 
-            "streams": parsed_streams
+            "total_streams": len(parsed),
+
+            "streams": parsed
 
         })
 
@@ -396,8 +399,7 @@ def watch():
 
             "success": False,
 
-            "error_type":
-                type(e).__name__,
+            "error_type": type(e).__name__,
 
             "error": str(e)
 
