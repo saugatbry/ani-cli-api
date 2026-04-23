@@ -1,38 +1,120 @@
 from flask import Flask, jsonify, request
-from anipy_api.provider import get_provider, LanguageTypeEnum
+from anipy_api.provider import (
+    get_provider,
+    list_providers,
+    LanguageTypeEnum,
+    Filters,
+    FilterCapabilities,
+    Season,
+)
 from anipy_api.anime import Anime
 
 app = Flask(__name__)
 
 
-def get_anime_provider():
-    return get_provider("allanime")
+# -------------------------
+# CONFIG
+# -------------------------
 
+DEFAULT_PROVIDER = "allanime"
+
+
+def get_anime_provider(provider_name=None):
+    provider_name = provider_name or DEFAULT_PROVIDER
+    return get_provider(provider_name)
+
+
+# -------------------------
+# HOME
+# -------------------------
 
 @app.route("/")
 def home():
     return jsonify({
         "success": True,
-        "api": "AllAnime API",
-        "provider": "allanime"
+        "message": "anipy-api Flask API",
+        "default_provider": DEFAULT_PROVIDER,
+        "routes": {
+            "/providers": "List available providers",
+            "/search?q=naruto": "Search anime",
+            "/search?q=&year=2023&season=FALL": "Season search",
+            "/anime?q=naruto": "Get anime info",
+            "/episodes?q=naruto": "Get episodes",
+            "/watch?q=naruto&episode=1": "Get stream"
+        }
     })
 
 
-# SEARCH ANIME
-@app.route("/search")
-def search():
-    query = request.args.get("q")
+# -------------------------
+# LIST PROVIDERS
+# -------------------------
 
-    if not query:
+@app.route("/providers")
+def providers():
+    try:
+        data = []
+
+        for provider_class in list_providers():
+            try:
+                provider = provider_class()
+
+                data.append({
+                    "name": provider.NAME,
+                    "base_url": provider.BASE_URL,
+                    "filter_caps": str(provider.FILTER_CAPS)
+                })
+
+            except Exception as e:
+                data.append({
+                    "name": str(provider_class),
+                    "error": str(e)
+                })
+
+        return jsonify({
+            "success": True,
+            "providers": data
+        })
+
+    except Exception as e:
         return jsonify({
             "success": False,
-            "error": "Missing query parameter ?q="
-        }), 400
+            "error": str(e)
+        }), 500
 
+
+# -------------------------
+# SEARCH
+# -------------------------
+
+@app.route("/search")
+def search():
     try:
-        provider = get_anime_provider()
+        query = request.args.get("q", "")
+        provider_name = request.args.get("provider", DEFAULT_PROVIDER)
 
-        results = provider.get_search(query)
+        provider = get_anime_provider(provider_name)
+
+        filters = None
+
+        year = request.args.get("year")
+        season = request.args.get("season")
+
+        # Optional filter support
+        if (
+            year
+            and season
+            and provider.FILTER_CAPS & (
+                FilterCapabilities.SEASON
+                | FilterCapabilities.YEAR
+                | FilterCapabilities.NO_QUERY
+            )
+        ):
+            filters = Filters(
+                year=int(year),
+                season=Season[season.upper()]
+            )
+
+        results = provider.get_search(query, filters=filters)
 
         data = []
 
@@ -45,6 +127,7 @@ def search():
 
         return jsonify({
             "success": True,
+            "provider": provider_name,
             "count": len(data),
             "results": data
         })
@@ -56,40 +139,65 @@ def search():
         }), 500
 
 
-# GET ANIME INFO
+# -------------------------
+# GET ANIME OBJECT
+# -------------------------
+
+def get_anime_from_query(query, provider_name):
+    provider = get_anime_provider(provider_name)
+
+    results = provider.get_search(query)
+
+    if not results:
+        return None, None, None
+
+    result = results[0]
+
+    anime = Anime.from_search_result(provider, result)
+
+    return provider, result, anime
+
+
+# -------------------------
+# ANIME INFO
+# -------------------------
+
 @app.route("/anime")
 def anime_info():
-    query = request.args.get("q")
-
-    if not query:
-        return jsonify({
-            "success": False,
-            "error": "Missing query parameter ?q="
-        }), 400
-
     try:
-        provider = get_anime_provider()
+        query = request.args.get("q")
+        provider_name = request.args.get("provider", DEFAULT_PROVIDER)
 
-        results = provider.get_search(query)
+        if not query:
+            return jsonify({
+                "success": False,
+                "error": "Missing ?q="
+            }), 400
 
-        if not results:
+        provider, result, anime = get_anime_from_query(
+            query,
+            provider_name
+        )
+
+        if not anime:
             return jsonify({
                 "success": False,
                 "error": "Anime not found"
             }), 404
 
-        target = results[0]
-
-        anime = Anime.from_search_result(provider, target)
-
         info = anime.get_info()
 
         return jsonify({
             "success": True,
-            "title": info.name,
-            "genres": info.genres,
-            "synopsis": info.synopsis,
-            "image": info.image
+            "provider": provider_name,
+            "anime": {
+                "title": info.name,
+                "id": result.identifier,
+                "genres": info.genres,
+                "synopsis": info.synopsis,
+                "image": info.image,
+                "languages": [str(lang) for lang in result.languages]
+            }
         })
 
     except Exception as e:
@@ -99,36 +207,47 @@ def anime_info():
         }), 500
 
 
-# GET EPISODES
+# -------------------------
+# EPISODES
+# -------------------------
+
 @app.route("/episodes")
 def episodes():
-    query = request.args.get("q")
-
-    if not query:
-        return jsonify({
-            "success": False,
-            "error": "Missing query parameter ?q="
-        }), 400
-
     try:
-        provider = get_anime_provider()
+        query = request.args.get("q")
+        provider_name = request.args.get("provider", DEFAULT_PROVIDER)
 
-        results = provider.get_search(query)
+        lang = request.args.get("lang", "sub").lower()
 
-        if not results:
+        if not query:
+            return jsonify({
+                "success": False,
+                "error": "Missing ?q="
+            }), 400
+
+        provider, result, anime = get_anime_from_query(
+            query,
+            provider_name
+        )
+
+        if not anime:
             return jsonify({
                 "success": False,
                 "error": "Anime not found"
             }), 404
 
-        target = results[0]
+        language = (
+            LanguageTypeEnum.DUB
+            if lang == "dub"
+            else LanguageTypeEnum.SUB
+        )
 
-        anime = Anime.from_search_result(provider, target)
-
-        eps = anime.get_episodes(lang=LanguageTypeEnum.SUB)
+        eps = anime.get_episodes(lang=language)
 
         return jsonify({
             "success": True,
+            "provider": provider_name,
+            "language": lang,
             "episodes": list(eps)
         })
 
@@ -139,42 +258,60 @@ def episodes():
         }), 500
 
 
-# WATCH EPISODE
+# -------------------------
+# WATCH
+# -------------------------
+
 @app.route("/watch")
 def watch():
-    query = request.args.get("q")
-    episode = request.args.get("episode")
-
-    if not query or not episode:
-        return jsonify({
-            "success": False,
-            "error": "Missing ?q= or ?episode="
-        }), 400
-
     try:
-        provider = get_anime_provider()
+        query = request.args.get("q")
+        episode = request.args.get("episode")
 
-        results = provider.get_search(query)
+        provider_name = request.args.get(
+            "provider",
+            DEFAULT_PROVIDER
+        )
 
-        if not results:
+        lang = request.args.get("lang", "sub").lower()
+
+        quality = request.args.get("quality", "1080")
+
+        if not query or not episode:
+            return jsonify({
+                "success": False,
+                "error": "Missing ?q= or ?episode="
+            }), 400
+
+        provider, result, anime = get_anime_from_query(
+            query,
+            provider_name
+        )
+
+        if not anime:
             return jsonify({
                 "success": False,
                 "error": "Anime not found"
             }), 404
 
-        target = results[0]
-
-        anime = Anime.from_search_result(provider, target)
+        language = (
+            LanguageTypeEnum.DUB
+            if lang == "dub"
+            else LanguageTypeEnum.SUB
+        )
 
         stream = anime.get_video(
             episode=float(episode),
-            lang=LanguageTypeEnum.SUB,
-            preferred_quality=1080
+            lang=language,
+            preferred_quality=quality
         )
 
         return jsonify({
             "success": True,
+            "provider": provider_name,
+            "anime": result.name,
             "episode": episode,
+            "language": lang,
             "video": stream.url,
             "quality": stream.resolution
         })
@@ -187,4 +324,4 @@ def watch():
 
 
 # IMPORTANT:
-# DO NOT use app.run() on Vercel
+# Do NOT use app.run() on Vercel
