@@ -1,93 +1,35 @@
 from flask import Flask, jsonify, request
-
-from anipy_api.provider import (
-    get_provider,
-    list_providers,
-    LanguageTypeEnum,
-    Filters,
-    FilterCapabilities,
-    Season,
-)
-
-from anipy_api.anime import Anime
+import requests
+from bs4 import BeautifulSoup
+import re
 
 app = Flask(__name__)
 
-# =========================================
-# CONFIG
-# =========================================
+BASE_URL = "https://allmanga.to"
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/123.0.0.0 Safari/537.36"
+    )
+}
 
-# safest modern provider
-DEFAULT_PROVIDER = "animekai"
 
 # =========================================
 # HELPERS
 # =========================================
 
 
-def get_anime_provider(provider_name=None):
-    provider_name = provider_name or DEFAULT_PROVIDER
-    return get_provider(provider_name)
-
-
-def build_filters(provider):
-    """
-    Build optional filters from query params
-    """
-
-    year = request.args.get("year")
-    season = request.args.get("season")
-
-    if not year or not season:
-        return None
-
-    # check provider capabilities
-    if not (
-        provider.FILTER_CAPS
-        & (
-            FilterCapabilities.SEASON
-            | FilterCapabilities.YEAR
-            | FilterCapabilities.NO_QUERY
-        )
-    ):
-        return None
-
-    try:
-        return Filters(
-            year=int(year),
-            season=Season[season.upper()]
-        )
-
-    except Exception:
-        return None
-
-
-def create_anime(query, provider_name):
-    provider = get_anime_provider(provider_name)
-
-    results = provider.get_search(query)
-
-    if not results:
-        return None, None, None
-
-    result = results[0]
-
-    anime = Anime.from_search_result(
-        provider,
-        result
+def fetch(url):
+    response = requests.get(
+        url,
+        headers=HEADERS,
+        timeout=20
     )
 
-    return provider, result, anime
+    response.raise_for_status()
 
-
-def get_language():
-    lang = request.args.get("lang", "sub").lower()
-
-    return (
-        LanguageTypeEnum.DUB
-        if lang == "dub"
-        else LanguageTypeEnum.SUB
-    )
+    return response.text
 
 
 # =========================================
@@ -98,84 +40,51 @@ def get_language():
 def home():
     return jsonify({
         "success": True,
-        "message": "anipy-api Flask API",
-
-        "default_provider": DEFAULT_PROVIDER,
-
+        "site": "allmanga.to",
         "routes": {
-
-            "/providers":
-                "List providers",
-
-            "/search?q=naruto":
-                "Search anime",
-
-            "/search?q=&year=2023&season=FALL":
-                "Season search",
-
-            "/anime?q=naruto":
-                "Anime info",
-
-            "/episodes?q=naruto":
-                "Episode list",
-
-            "/watch?q=naruto&episode=1":
-                "Get streams",
-
+            "/anime-list?lang=sub": "Get anime page",
+            "/search?q=naruto&lang=sub": "Search anime",
+            "/anime/<anime_id>": "Get anime info",
+            "/episodes/<anime_id>?lang=sub": "Get episodes",
+            "/watch/<anime_id>/<episode>?lang=sub": "Get streams"
         }
     })
 
 
 # =========================================
-# LIST PROVIDERS
+# ANIME LIST
 # =========================================
 
-@app.route("/providers")
-def providers():
-
+@app.route("/anime-list")
+def anime_list():
     try:
-        providers_data = []
+        lang = request.args.get("lang", "sub")
 
-        for provider_class in list_providers():
+        url = (
+            f"{BASE_URL}/search-anime?"
+            f"tr={lang}&cty=ALL"
+        )
 
-            try:
-                provider = provider_class()
+        html = fetch(url)
 
-                providers_data.append({
+        anime_links = re.findall(
+            r'/bangumi/([A-Za-z0-9_-]+)',
+            html
+        )
 
-                    "name": provider.NAME,
-
-                    "base_url": provider.BASE_URL,
-
-                    "filter_caps":
-                        str(provider.FILTER_CAPS)
-
-                })
-
-            except Exception as e:
-
-                providers_data.append({
-
-                    "error": str(e)
-
-                })
+        unique = list(set(anime_links))
 
         return jsonify({
-
             "success": True,
-
-            "providers": providers_data
-
+            "language": lang,
+            "count": len(unique),
+            "anime_ids": unique
         })
 
     except Exception as e:
-
         return jsonify({
-
             "success": False,
-
             "error": str(e)
-
         }), 500
 
 
@@ -185,63 +94,53 @@ def providers():
 
 @app.route("/search")
 def search():
-
     try:
-        query = request.args.get("q", "")
+        query = request.args.get("q")
+        lang = request.args.get("lang", "sub")
 
-        provider_name = request.args.get(
-            "provider",
-            DEFAULT_PROVIDER
+        if not query:
+            return jsonify({
+                "success": False,
+                "error": "Missing ?q="
+            }), 400
+
+        url = (
+            f"{BASE_URL}/search-anime?"
+            f"tr={lang}&cty=ALL"
         )
 
-        provider = get_anime_provider(
-            provider_name
+        html = fetch(url)
+
+        pattern = re.compile(
+            r'/bangumi/([A-Za-z0-9_-]+)'
         )
 
-        filters = build_filters(provider)
+        ids = list(set(pattern.findall(html)))
 
-        results = provider.get_search(
-            query,
-            filters=filters
-        )
+        results = []
 
-        data = []
+        for anime_id in ids:
+            clean_name = anime_id.replace("-", " ")
 
-        for r in results:
-
-            data.append({
-
-                "title": r.name,
-
-                "id": r.identifier,
-
-                "languages": [
-                    str(x)
-                    for x in r.languages
-                ]
-
-            })
+            if query.lower() in clean_name.lower():
+                results.append({
+                    "id": anime_id,
+                    "title": clean_name.title(),
+                    "url": (
+                        f"{BASE_URL}/bangumi/{anime_id}"
+                    )
+                })
 
         return jsonify({
-
             "success": True,
-
-            "provider": provider_name,
-
-            "count": len(data),
-
-            "results": data
-
+            "count": len(results),
+            "results": results[:50]
         })
 
     except Exception as e:
-
         return jsonify({
-
             "success": False,
-
             "error": str(e)
-
         }), 500
 
 
@@ -249,81 +148,39 @@ def search():
 # ANIME INFO
 # =========================================
 
-@app.route("/anime")
-def anime_info():
-
+@app.route("/anime/<anime_id>")
+def anime_info(anime_id):
     try:
-        query = request.args.get("q")
+        url = f"{BASE_URL}/bangumi/{anime_id}"
 
-        provider_name = request.args.get(
-            "provider",
-            DEFAULT_PROVIDER
-        )
+        html = fetch(url)
 
-        if not query:
+        soup = BeautifulSoup(html, "html.parser")
 
-            return jsonify({
+        title = anime_id.replace("-", " ").title()
 
-                "success": False,
+        # attempt image extraction
+        image = None
 
-                "error":
-                    "Missing ?q="
+        img = soup.find("img")
 
-            }), 400
-
-        provider, result, anime = create_anime(
-            query,
-            provider_name
-        )
-
-        if not anime:
-
-            return jsonify({
-
-                "success": False,
-
-                "error":
-                    "Anime not found"
-
-            }), 404
-
-        info = anime.get_info()
+        if img:
+            image = img.get("src")
 
         return jsonify({
-
             "success": True,
-
-            "provider": provider_name,
-
             "anime": {
-
-                "title": info.name,
-
-                "id": result.identifier,
-
-                "image": info.image,
-
-                "genres": info.genres,
-
-                "synopsis": info.synopsis,
-
-                "languages": [
-                    str(x)
-                    for x in result.languages
-                ]
-
+                "id": anime_id,
+                "title": title,
+                "url": url,
+                "image": image
             }
-
         })
 
     except Exception as e:
-
         return jsonify({
-
             "success": False,
-
             "error": str(e)
-
         }), 500
 
 
@@ -331,70 +188,42 @@ def anime_info():
 # EPISODES
 # =========================================
 
-@app.route("/episodes")
-def episodes():
-
+@app.route("/episodes/<anime_id>")
+def episodes(anime_id):
     try:
-        query = request.args.get("q")
+        lang = request.args.get("lang", "sub")
 
-        provider_name = request.args.get(
-            "provider",
-            DEFAULT_PROVIDER
+        url = (
+            f"{BASE_URL}/bangumi/"
+            f"{anime_id}"
         )
 
-        if not query:
+        html = fetch(url)
 
-            return jsonify({
-
-                "success": False,
-
-                "error":
-                    "Missing ?q="
-
-            }), 400
-
-        provider, result, anime = create_anime(
-            query,
-            provider_name
+        episode_matches = re.findall(
+            r'/p-([0-9.]+)-(sub|dub)',
+            html
         )
 
-        if not anime:
+        eps = []
 
-            return jsonify({
+        for ep, ep_lang in episode_matches:
+            if ep_lang == lang:
+                eps.append(float(ep))
 
-                "success": False,
-
-                "error":
-                    "Anime not found"
-
-            }), 404
-
-        language = get_language()
-
-        eps = anime.get_episodes(
-            lang=language
-        )
+        eps = sorted(list(set(eps)))
 
         return jsonify({
-
             "success": True,
-
-            "provider": provider_name,
-
-            "anime": result.name,
-
-            "episodes": list(eps)
-
+            "anime_id": anime_id,
+            "language": lang,
+            "episodes": eps
         })
 
     except Exception as e:
-
         return jsonify({
-
             "success": False,
-
             "error": str(e)
-
         }), 500
 
 
@@ -402,159 +231,67 @@ def episodes():
 # WATCH / STREAMS
 # =========================================
 
-@app.route("/watch")
-def watch():
-
+@app.route("/watch/<anime_id>/<episode>")
+def watch(anime_id, episode):
     try:
+        lang = request.args.get("lang", "sub")
 
-        query = request.args.get("q")
-
-        episode = request.args.get("episode")
-
-        provider_name = request.args.get(
-            "provider",
-            DEFAULT_PROVIDER
+        episode_url = (
+            f"{BASE_URL}/bangumi/"
+            f"{anime_id}/p-{episode}-{lang}"
         )
 
-        if not query:
+        html = fetch(episode_url)
 
-            return jsonify({
+        stream_types = [
+            "default",
+            "ak",
+            "yt",
+            "luf-mp4",
+            "vg",
+            "fm-hls",
+            "vid-mp4",
+            "mp4",
+            "ok",
+            "sl-mp4",
+            "uv-mp4"
+        ]
 
-                "success": False,
+        found_streams = []
 
-                "error":
-                    "Missing ?q="
-
-            }), 400
-
-        if not episode:
-
-            return jsonify({
-
-                "success": False,
-
-                "error":
-                    "Missing ?episode="
-
-            }), 400
-
-        provider, result, anime = create_anime(
-            query,
-            provider_name
-        )
-
-        if not anime:
-
-            return jsonify({
-
-                "success": False,
-
-                "error":
-                    "Anime not found"
-
-            }), 404
-
-        language = get_language()
-
-        try:
-
-            streams = anime.get_videos(
-                episode=float(episode),
-                lang=language
-            )
-
-        except Exception as stream_error:
-
-            return jsonify({
-
-                "success": False,
-
-                "stage":
-                    "get_videos",
-
-                "provider":
-                    provider_name,
-
-                "anime":
-                    result.name,
-
-                "episode":
-                    episode,
-
-                "error":
-                    str(stream_error)
-
-            }), 500
-
-        if not streams:
-
-            return jsonify({
-
-                "success": False,
-
-                "error":
-                    "No streams found"
-
-            }), 404
-
-        parsed_streams = []
-
-        for s in streams:
-
-            try:
-
-                parsed_streams.append({
-
-                    "url":
-                        getattr(s, "url", None),
-
-                    "quality":
-                        getattr(
-                            s,
-                            "resolution",
-                            "unknown"
-                        ),
-
-                    "episode":
-                        getattr(
-                            s,
-                            "episode",
-                            episode
-                        )
-
+        for stream_type in stream_types:
+            if stream_type in html:
+                found_streams.append({
+                    "server": stream_type
                 })
 
-            except Exception:
-                pass
+        # extract possible m3u8/mp4 links
+        video_links = re.findall(
+            r'https?:\\/\\/[^\"\']+?(?:m3u8|mp4)',
+            html
+        )
+
+        cleaned_links = []
+
+        for link in video_links:
+            cleaned_links.append(
+                link.replace("\\/", "/")
+            )
+
+        cleaned_links = list(set(cleaned_links))
 
         return jsonify({
-
             "success": True,
-
-            "provider":
-                provider_name,
-
-            "anime":
-                result.name,
-
-            "episode":
-                episode,
-
-            "streams":
-                parsed_streams
-
+            "anime_id": anime_id,
+            "episode": episode,
+            "language": lang,
+            "page_url": episode_url,
+            "servers": found_streams,
+            "video_links": cleaned_links
         })
 
     except Exception as e:
-
         return jsonify({
-
             "success": False,
-
-            "error_type":
-                type(e).__name__,
-
-            "error":
-                str(e)
-
+            "error": str(e)
         }), 500
