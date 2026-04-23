@@ -2,7 +2,7 @@ from flask import Flask, jsonify, request
 
 from anipy_api.provider import (
     get_provider,
-    LanguageTypeEnum,
+    LanguageTypeEnum
 )
 
 from anipy_api.anime import Anime
@@ -10,20 +10,31 @@ from anipy_api.anime import Anime
 app = Flask(__name__)
 
 # =========================================
-# PROVIDER
+# USE ANIMEKAI INSTEAD OF ALLANIME
 # =========================================
 
-# allanime = allmanga.to
 provider = get_provider("animekai", base_url_override="https://animekai.to") 
+
 
 # =========================================
 # HELPERS
 # =========================================
 
-def find_anime(query):
-    """
-    Search anime safely
-    """
+def get_lang():
+
+    lang = request.args.get(
+        "lang",
+        "sub"
+    ).lower()
+
+    return (
+        LanguageTypeEnum.DUB
+        if lang == "dub"
+        else LanguageTypeEnum.SUB
+    )
+
+
+def search_anime(query):
 
     results = provider.get_search(query)
 
@@ -31,16 +42,6 @@ def find_anime(query):
         return None
 
     return results[0]
-
-
-def get_language():
-    lang = request.args.get("lang", "sub").lower()
-
-    return (
-        LanguageTypeEnum.DUB
-        if lang == "dub"
-        else LanguageTypeEnum.SUB
-    )
 
 
 # =========================================
@@ -54,23 +55,21 @@ def home():
 
         "success": True,
 
-        "provider": "allanime",
-
-        "site": "allmanga.to",
+        "provider": "animekai",
 
         "routes": {
 
             "/search?q=naruto":
-                "Search anime",
+                "search anime",
 
             "/anime?q=naruto":
-                "Anime info",
+                "anime info",
 
             "/episodes?q=naruto":
-                "Episode list",
+                "episodes",
 
             "/watch?q=naruto&episode=1":
-                "Get streams"
+                "video streams"
 
         }
 
@@ -159,7 +158,7 @@ def anime_info():
 
     try:
 
-        result = find_anime(query)
+        result = search_anime(query)
 
         if not result:
 
@@ -186,18 +185,11 @@ def anime_info():
 
                 "title": info.name,
 
-                "id": result.identifier,
-
                 "image": info.image,
 
                 "genres": info.genres,
 
-                "synopsis": info.synopsis,
-
-                "languages": [
-                    str(x)
-                    for x in result.languages
-                ]
+                "synopsis": info.synopsis
 
             }
 
@@ -235,7 +227,7 @@ def episodes():
 
     try:
 
-        result = find_anime(query)
+        result = search_anime(query)
 
         if not result:
 
@@ -252,10 +244,8 @@ def episodes():
             result
         )
 
-        language = get_language()
-
         eps = anime.get_episodes(
-            lang=language
+            lang=get_lang()
         )
 
         return jsonify({
@@ -288,96 +278,84 @@ def watch():
 
     query = request.args.get("q")
     episode = request.args.get("episode")
-    lang = request.args.get("lang", "sub")
 
     if not query:
+
         return jsonify({
+
             "success": False,
+
             "error": "Missing ?q="
+
         }), 400
 
     if not episode:
+
         return jsonify({
+
             "success": False,
+
             "error": "Missing ?episode="
+
         }), 400
 
     try:
 
-        # SEARCH
-        results = provider.get_search(query)
+        result = search_anime(query)
 
-        if not results:
+        if not result:
+
             return jsonify({
-                "success": False,
-                "error": "Anime not found"
-            }), 404
 
-        result = results[0]
+                "success": False,
+
+                "error": "Anime not found"
+
+            }), 404
 
         anime = Anime.from_search_result(
             provider,
             result
         )
 
-        language = (
-            LanguageTypeEnum.DUB
-            if lang == "dub"
-            else LanguageTypeEnum.SUB
-        )
-
-        # safer than get_video()
+        # get all streams
         streams = anime.get_videos(
             episode=float(episode),
-            lang=language
+            lang=get_lang()
         )
 
         if not streams:
+
             return jsonify({
+
                 "success": False,
+
                 "error": "No streams found"
+
             }), 404
 
         parsed = []
 
-        for stream in streams:
+        for s in streams:
 
             try:
 
-                if not stream:
-                    continue
-
-                url = getattr(stream, "url", None)
-
-                if not url:
-                    continue
-
                 parsed.append({
 
-                    "url": url,
+                    "url":
+                        getattr(s, "url", None),
 
-                    "resolution": getattr(
-                        stream,
-                        "resolution",
-                        "unknown"
-                    ),
-
-                    "episode": getattr(
-                        stream,
-                        "episode",
-                        episode
-                    )
+                    "resolution":
+                        getattr(
+                            s,
+                            "resolution",
+                            "unknown"
+                        )
 
                 })
 
             except Exception:
                 continue
-
-        if not parsed:
-            return jsonify({
-                "success": False,
-                "error": "Provider returned broken streams"
-            }), 500
 
         return jsonify({
 
@@ -386,8 +364,6 @@ def watch():
             "anime": result.name,
 
             "episode": episode,
-
-            "total_streams": len(parsed),
 
             "streams": parsed
 
@@ -399,14 +375,9 @@ def watch():
 
             "success": False,
 
-            "error_type": type(e).__name__,
+            "error_type":
+                type(e).__name__,
 
             "error": str(e)
 
         }), 500
-
-
-# =========================================
-# IMPORTANT
-# =========================================
-# DO NOT USE app.run() ON VERCEL
