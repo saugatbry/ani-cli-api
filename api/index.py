@@ -104,37 +104,69 @@ def search():
                 "error": "Missing ?q="
             }), 400
 
-        url = (
-            f"{BASE_URL}/search-anime?"
-            f"tr={lang}&cty=ALL"
+        # allmanga uses client-side rendering,
+        # so we use their graphql api directly
+
+        api_url = "https://api.allanime.day/api"
+
+        graphql_query = {
+            "query": """
+            query($search: SearchInput, $limit: Int, $page: Int, $translationType: VaildTranslationTypeEnumType) {
+              shows(search: $search, limit: $limit, page: $page, translationType: $translationType) {
+                edges {
+                  _id
+                  name
+                  availableEpisodesDetail
+                }
+              }
+            }
+            """,
+            "variables": {
+                "search": {
+                    "query": query
+                },
+                "limit": 20,
+                "page": 1,
+                "translationType": lang
+            }
+        }
+
+        response = requests.post(
+            api_url,
+            json=graphql_query,
+            headers=HEADERS,
+            timeout=20
         )
 
-        html = fetch(url)
+        data = response.json()
 
-        pattern = re.compile(
-            r'/bangumi/([A-Za-z0-9_-]+)'
+        shows = (
+            data
+            .get("data", {})
+            .get("shows", {})
+            .get("edges", [])
         )
-
-        ids = list(set(pattern.findall(html)))
 
         results = []
 
-        for anime_id in ids:
-            clean_name = anime_id.replace("-", " ")
-
-            if query.lower() in clean_name.lower():
-                results.append({
-                    "id": anime_id,
-                    "title": clean_name.title(),
-                    "url": (
-                        f"{BASE_URL}/bangumi/{anime_id}"
-                    )
-                })
+        for anime in shows:
+            results.append({
+                "id": anime.get("_id"),
+                "title": anime.get("name"),
+                "episodes": anime.get(
+                    "availableEpisodesDetail",
+                    {}
+                ),
+                "url": (
+                    f"https://allmanga.to/bangumi/"
+                    f"{anime.get('_id')}"
+                )
+            })
 
         return jsonify({
             "success": True,
             "count": len(results),
-            "results": results[:50]
+            "results": results
         })
 
     except Exception as e:
